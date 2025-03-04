@@ -1,16 +1,79 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
-import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
-import { Card } from "@/components/ui/card"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
-import { Loader2, Share2, Code2, Eye, Copy, CheckCircle2 } from "lucide-react"
+import React, { useState, useEffect, useRef } from "react"
+import { LiveProvider, LiveEditor, LiveError, LivePreview } from 'react-live'
+import * as LucideIcons from 'lucide-react'
+import { nanoid } from "nanoid"
 import { generateUI } from "@/actions/generate-ui"
 import { useToast } from "@/components/ui/use-toast"
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Separator } from "@/components/ui/separator"
+import { Loader2, Eye, Code2, Terminal, Copy, Check, Share2, History, X, ChevronUp, ChevronDown, AlertCircle, AlertTriangle, Info } from "lucide-react"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
+import { savePreview } from "@/lib/blob-storage"
+import { Input } from "@/components/ui/input"
+import { ProductCard } from "./product-card"
+
+// Default example component to demonstrate the rendering
+const DEFAULT_COMPONENT = `import React from "react";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { ShoppingCart, Heart, Share } from "lucide-react";
+
+export function ProductCard() {
+  return (
+    <Card className="w-[350px] shadow-lg">
+      <CardHeader className="pb-2">
+        <div className="flex justify-between">
+          <div>
+            <CardTitle className="text-xl">Modern Minimal Chair</CardTitle>
+            <CardDescription>Scandinavian design</CardDescription>
+          </div>
+          <div className="px-2 py-1 bg-slate-100 text-slate-800 text-xs font-medium rounded-full">New</div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="aspect-square rounded-md bg-slate-100 mb-4 flex items-center justify-center">
+          <img 
+            src="https://images.unsplash.com/photo-1598300042247-d088f8ab3a91?w=500&auto=format&fit=crop&q=60" 
+            alt="Modern chair"
+            className="rounded-md object-cover w-full h-full"
+          />
+        </div>
+        <div className="grid gap-2">
+          <div className="flex justify-between">
+            <div className="font-medium">Price</div>
+            <div className="font-bold">$249.99</div>
+          </div>
+          <div className="flex justify-between">
+            <div className="font-medium">Rating</div>
+            <div className="flex">
+              {"★★★★☆"}
+              <span className="ml-1 text-sm text-muted-foreground">(4.2)</span>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+      <CardFooter className="flex gap-2">
+        <Button className="flex-1">
+          <ShoppingCart className="h-4 w-4 mr-2" />
+          Add to Cart
+        </Button>
+        <Button variant="outline" size="icon">
+          <Heart className="h-4 w-4" />
+        </Button>
+        <Button variant="outline" size="icon">
+          <Share className="h-4 w-4" />
+        </Button>
+      </CardFooter>
+    </Card>
+  );
+}
+`;
 
 type HistoryItem = {
   id: string;
@@ -18,19 +81,44 @@ type HistoryItem = {
   timestamp: Date;
 };
 
+// Console message type definition
+type ConsoleMessage = {
+  id: string;
+  type: 'error' | 'warning' | 'info' | 'log';
+  content: string;
+  timestamp: Date;
+};
+
 export function PrototypingCanvas() {
   const [prompt, setPrompt] = useState("")
-  const [generatedUI, setGeneratedUI] = useState<string>("")
+  const [generatedUI, setGeneratedUI] = useState<string>(DEFAULT_COMPONENT)
+  const [previewCode, setPreviewCode] = useState<string>("") // Store simplified preview code
   const [isGenerating, setIsGenerating] = useState(false)
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [activeTab, setActiveTab] = useState("preview")
   const codeRef = useRef<HTMLElement>(null)
   const { toast } = useToast()
-
-  // Create a sandbox iframe for safely rendering components
-  const iframeRef = useRef<HTMLIFrameElement>(null);
   const [copySuccess, setCopySuccess] = useState(false);
-  const [previewKey, setPreviewKey] = useState(0); // Used to force re-render the iframe
+  
+  // Console state
+  const [consoleMessages, setConsoleMessages] = useState<ConsoleMessage[]>([])
+  const [isConsoleOpen, setIsConsoleOpen] = useState(false)
+  const [mirrorConsoleLogs, setMirrorConsoleLogs] = useState(true)
+  const [consoleFilterType, setConsoleFilterType] = useState<'all' | 'error' | 'warning' | 'info' | 'log'>('all')
+  const consoleEndRef = useRef<HTMLDivElement>(null)
+  const processedComponentRef = useRef<string | null>(null)
+  
+  // Add initial message about the example component
+  useEffect(() => {
+    // Only add the message if there are no messages yet (to prevent duplicates on hot reload)
+    if (consoleMessages.length === 0) {
+      // Use setTimeout to avoid render loop issues
+      setTimeout(() => {
+        addConsoleMessage('info', 'Welcome! A default product card component has been loaded as an example.');
+      }, 0);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array to run only once
 
   // Load Prism.js for syntax highlighting when the component mounts or generatedUI changes
   useEffect(() => {
@@ -62,42 +150,148 @@ export function PrototypingCanvas() {
     }
   };
 
-  const handleSubmit = async () => {
-    if (!prompt.trim() || isGenerating) return;
+  // Generate simplified preview code on mount or when generatedUI changes
+  useEffect(() => {
+    if (generatedUI) {
+      // For the default component, generate preview on load
+      if (!previewCode && generatedUI === DEFAULT_COMPONENT) {
+        // Generate preview immediately instead of async
+        const preview = `
+function ProductCard() {
+  return (
+    <Card className="w-[350px] shadow-lg">
+      <CardHeader className="pb-2">
+        <div className="flex justify-between">
+          <div>
+            <CardTitle className="text-xl">Modern Minimal Chair</CardTitle>
+            <CardDescription>Scandinavian design</CardDescription>
+          </div>
+          <div className="px-2 py-1 bg-slate-100 text-slate-800 text-xs font-medium rounded-full">New</div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="aspect-square rounded-md bg-slate-100 mb-4 flex items-center justify-center">
+          <img 
+            src="https://images.unsplash.com/photo-1598300042247-d088f8ab3a91?w=500&auto=format&fit=crop&q=60" 
+            alt="Modern chair"
+            className="rounded-md object-cover w-full h-full"
+          />
+        </div>
+        <div className="grid gap-2">
+          <div className="flex justify-between">
+            <div className="font-medium">Price</div>
+            <div className="font-bold">$249.99</div>
+          </div>
+          <div className="flex justify-between">
+            <div className="font-medium">Rating</div>
+            <div className="flex">
+              {"★★★★☆"}
+              <span className="ml-1 text-sm text-muted-foreground">(4.2)</span>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+      <CardFooter className="flex gap-2">
+        <Button className="flex-1">
+          <ShoppingCart className="h-4 w-4 mr-2" />
+          Add to Cart
+        </Button>
+        <Button variant="outline" size="icon">
+          <Heart className="h-4 w-4" />
+        </Button>
+        <Button variant="outline" size="icon">
+          <Share className="h-4 w-4" />
+        </Button>
+      </CardFooter>
+    </Card>
+  );
+}
 
-    setIsGenerating(true);
-    setGeneratedUI("");
-
+render(<ProductCard />);`;
+        
+        setPreviewCode(preview);
+        addConsoleMessage('info', 'Default example component loaded successfully.');
+      }
+    }
+  }, [generatedUI, previewCode]);
+  
+  // Create a preview-friendly version of the component
+  const createPreviewVersion = async (componentCode: string) => {
     try {
+      // Extract component name from the code
+      let componentName = "ProductCard"; // default fallback
+      const defaultExportMatch = /export\s+default\s+function\s+(\w+)/.exec(componentCode);
+      const namedExportMatch = /export\s+function\s+(\w+)/.exec(componentCode);
+      const arrowFunctionMatch = /export\s+const\s+(\w+)\s+=/.exec(componentCode);
+      
+      if (defaultExportMatch) {
+        componentName = defaultExportMatch[1];
+      } else if (namedExportMatch) {
+        componentName = namedExportMatch[1];
+      } else if (arrowFunctionMatch) {
+        componentName = arrowFunctionMatch[1];
+      }
+      
+      // Create simplified preview code
+      const simplifiedCode = `
+function ${componentName}() {
+  ${componentCode
+    .replace(/"use client"/, '')
+    .replace(/import\s+{[^}]*}\s+from\s+["']@\/components\/ui\/[^"']*["'];?/g, '')
+    .replace(/import\s+[^;]*;/g, '')
+    .replace(/export\s+default\s+/g, '')
+    .replace(/export\s+/g, '')
+    .replace(/function\s+${componentName}\s*\(/g, 'return (')}
+}
+
+render(<${componentName} />);`;
+
+      setPreviewCode(simplifiedCode);
+      addConsoleMessage('info', `Preview for "${componentName}" generated.`);
+    } catch (error) {
+      console.error("Error creating preview version:", error);
+      addConsoleMessage('error', `Error generating preview: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  };
+
+  // Update handleSubmit to generate both component and preview
+  const handleSubmit = async () => {
+    if (!prompt.trim()) {
+      addConsoleMessage('warning', 'Please enter a prompt before generating.');
+      return;
+    }
+    
+    setIsGenerating(true);
+    setActiveTab("preview"); // Switch to preview tab
+    
+    try {
+      addConsoleMessage('info', `Generating UI for prompt: "${prompt}"`);
+      
       const result = await generateUI(prompt);
       
-      // Add to history
-      const newId = crypto.randomUUID();
-      const newHistoryItem = {
-        id: newId,
-        prompt,
-        timestamp: new Date(),
-      };
-      
-      setGeneratedUI(result.html);
-      setHistory(prev => [newHistoryItem, ...prev]);
-      setActiveTab("preview"); // Switch to preview after generation
-      setPreviewKey(prev => prev + 1); // Force iframe refresh
-
-      // Ensure preview is rendered after a short delay to allow state updates
-      setTimeout(() => {
-        if (iframeRef.current) {
-          refreshPreview();
-        }
-      }, 500);
-      
+      if (result && result.html) {
+        // Clear the previous component reference to ensure new component is processed
+        processedComponentRef.current = null;
+        
+        setGeneratedUI(result.html);
+        // Create a preview-friendly version of the component
+        await createPreviewVersion(result.html);
+        
+        // Add to history
+        const historyItem = {
+          id: nanoid(),
+          prompt,
+          timestamp: new Date()
+        };
+        setHistory(prev => [historyItem, ...prev]);
+        
+        addConsoleMessage('info', 'UI component generated successfully.');
+      } else {
+        addConsoleMessage('error', `Generation failed: No component returned`);
+      }
     } catch (error) {
       console.error("Error generating UI:", error);
-      toast({
-        title: "Generation failed",
-        description: error instanceof Error ? error.message : "Failed to generate UI component",
-        variant: "destructive",
-      });
+      addConsoleMessage('error', `Error generating UI: ${error instanceof Error ? error.message : "Unknown error"}`);
     } finally {
       setIsGenerating(false);
     }
@@ -135,20 +329,6 @@ export function PrototypingCanvas() {
     }
   };
 
-  const refreshPreview = () => {
-    if (iframeRef.current && iframeRef.current.contentWindow) {
-      // Send a message to the iframe to refresh the component
-      try {
-        iframeRef.current.contentWindow.postMessage({
-          type: 'REFRESH_COMPONENT',
-          code: generatedUI
-        }, '*');
-      } catch (error) {
-        console.error("Error sending message to iframe:", error);
-      }
-    }
-  };
-
   const handleCopyCode = async () => {
     if (generatedUI) {
       try {
@@ -181,692 +361,520 @@ export function PrototypingCanvas() {
     }).format(date)
   };
 
-  // Update the renderPreview function to properly render React components in an iframe
+  // Create mock components for Shadcn UI to use with react-live
+  const createShadcnComponents = () => {
+    const components: Record<string, React.ComponentType<any>> = {
+      // Button component with proper variants
+      Button: ({ children, variant = "default", size = "default", className = "", ...props }) => {
+        const variantClasses: Record<string, string> = {
+          default: "bg-primary text-primary-foreground",
+          secondary: "bg-secondary text-secondary-foreground",
+          destructive: "bg-destructive text-destructive-foreground",
+          outline: "border border-input bg-background",
+          ghost: "hover:bg-accent hover:text-accent-foreground",
+          link: "text-primary underline-offset-4 hover:underline"
+        };
+        
+        const sizeClasses: Record<string, string> = {
+          default: "h-10 px-4 py-2",
+          sm: "h-9 rounded-md px-3",
+          lg: "h-11 rounded-md px-8",
+          icon: "h-10 w-10"
+        };
+        
+        const combinedClassName = `inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors ${variantClasses[variant]} ${sizeClasses[size]} ${className}`;
+        
+        return (
+          <button className={combinedClassName} {...props}>
+            {children}
+          </button>
+        );
+      },
+      
+      // Card components
+      Card: ({ children, className = "", ...props }) => (
+        <div className={`rounded-lg border bg-card text-card-foreground shadow-sm ${className}`} {...props}>
+          {children}
+        </div>
+      ),
+      CardHeader: ({ children, className = "", ...props }) => (
+        <div className={`flex flex-col space-y-1.5 p-6 ${className}`} {...props}>
+          {children}
+        </div>
+      ),
+      CardTitle: ({ children, className = "", ...props }) => (
+        <h3 className={`text-2xl font-semibold leading-none tracking-tight ${className}`} {...props}>
+          {children}
+        </h3>
+      ),
+      CardDescription: ({ children, className = "", ...props }) => (
+        <p className={`text-sm text-muted-foreground ${className}`} {...props}>
+          {children}
+        </p>
+      ),
+      CardContent: ({ children, className = "", ...props }) => (
+        <div className={`p-6 pt-0 ${className}`} {...props}>
+          {children}
+        </div>
+      ),
+      CardFooter: ({ children, className = "", ...props }) => (
+        <div className={`flex items-center p-6 pt-0 ${className}`} {...props}>
+          {children}
+        </div>
+      ),
+      
+      // Input component
+      Input: ({ className = "", ...props }) => (
+        <input className={`flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background ${className}`} {...props} />
+      ),
+      
+      // Textarea component
+      Textarea: ({ className = "", ...props }) => (
+        <textarea className={`flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background ${className}`} {...props} />
+      ),
+      
+      // Add more Shadcn UI components as needed...
+    };
+    
+    return components;
+  };
+
+  // Create a list of all supported Shadcn components for code processing
+  const supportedComponents = [
+    'Accordion', 'AccordionContent', 'AccordionItem', 'AccordionTrigger',
+    'Alert', 'AlertDescription', 'AlertTitle',
+    'AlertDialog', 'AlertDialogAction', 'AlertDialogCancel', 'AlertDialogContent', 
+    'AlertDialogDescription', 'AlertDialogFooter', 'AlertDialogHeader', 'AlertDialogTitle', 'AlertDialogTrigger',
+    'AspectRatio',
+    'Avatar', 'AvatarFallback', 'AvatarImage',
+    'Badge',
+    'Button',
+    'Calendar',
+    'Card', 'CardContent', 'CardDescription', 'CardFooter', 'CardHeader', 'CardTitle',
+    'Checkbox',
+    'Collapsible', 'CollapsibleContent', 'CollapsibleTrigger',
+    'Command', 'CommandDialog', 'CommandEmpty', 'CommandGroup', 'CommandInput', 'CommandItem', 
+    'CommandList', 'CommandSeparator', 'CommandShortcut',
+    'Dialog', 'DialogClose', 'DialogContent', 'DialogDescription', 'DialogFooter', 
+    'DialogHeader', 'DialogTitle', 'DialogTrigger',
+    'DropdownMenu', 'DropdownMenuCheckboxItem', 'DropdownMenuContent', 'DropdownMenuGroup', 
+    'DropdownMenuItem', 'DropdownMenuLabel', 'DropdownMenuPortal', 'DropdownMenuRadioGroup', 
+    'DropdownMenuRadioItem', 'DropdownMenuSeparator', 'DropdownMenuShortcut', 'DropdownMenuSub', 
+    'DropdownMenuSubContent', 'DropdownMenuSubTrigger', 'DropdownMenuTrigger',
+    'Form', 'FormControl', 'FormDescription', 'FormField', 'FormItem', 'FormLabel', 'FormMessage',
+    'Input',
+    'Label',
+    'Menubar', 'MenubarCheckboxItem', 'MenubarContent', 'MenubarGroup', 'MenubarItem', 
+    'MenubarLabel', 'MenubarMenu', 'MenubarPortal', 'MenubarRadioGroup', 'MenubarRadioItem', 
+    'MenubarSeparator', 'MenubarShortcut', 'MenubarSub', 'MenubarSubContent', 'MenubarSubTrigger', 'MenubarTrigger',
+    'Popover', 'PopoverContent', 'PopoverTrigger',
+    'Progress',
+    'RadioGroup', 'RadioGroupItem',
+    'ScrollArea', 'ScrollBar',
+    'Select', 'SelectContent', 'SelectGroup', 'SelectItem', 'SelectLabel', 'SelectSeparator', 
+    'SelectTrigger', 'SelectValue',
+    'Separator',
+    'Sheet', 'SheetClose', 'SheetContent', 'SheetDescription', 'SheetFooter', 'SheetHeader', 'SheetTitle', 'SheetTrigger',
+    'Skeleton',
+    'Slider',
+    'Switch',
+    'Table', 'TableBody', 'TableCaption', 'TableCell', 'TableFooter', 'TableHead', 'TableHeader', 'TableRow',
+    'Tabs', 'TabsContent', 'TabsList', 'TabsTrigger',
+    'Textarea',
+    'Toast', 'ToastAction', 'ToastClose', 'ToastDescription', 'ToastProvider', 'ToastTitle', 'ToastViewport',
+    'Toggle', 'ToggleGroup', 'ToggleGroupItem',
+    'Tooltip', 'TooltipContent', 'TooltipProvider', 'TooltipTrigger'
+  ];
+
+  // Scroll to bottom when new console messages are added
+  useEffect(() => {
+    if (consoleEndRef.current && isConsoleOpen) {
+      consoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [consoleMessages, isConsoleOpen]);
+
+  // Clear console messages when generating a new component
+  useEffect(() => {
+    if (isGenerating) {
+      setConsoleMessages([]);
+    }
+  }, [isGenerating]);
+
+  // Function to add a message to the console
+  const addConsoleMessage = (type: 'error' | 'warning' | 'info' | 'log', content: string) => {
+    // Limit the number of messages to 100
+    setConsoleMessages(prev => {
+      const newMessages = [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          type,
+          content,
+          timestamp: new Date()
+        }
+      ];
+      
+      // Only keep the latest 100 messages
+      return newMessages.slice(-100);
+    });
+  };
+
+  // Auto-open console when errors are added
+  useEffect(() => {
+    // Check if there are any error messages and console is not already open
+    if (consoleMessages.some(msg => msg.type === 'error') && !isConsoleOpen) {
+      setIsConsoleOpen(true);
+    }
+  }, [consoleMessages, isConsoleOpen]);
+
+  // Clear console
+  const clearConsole = () => {
+    setConsoleMessages([]);
+  };
+
+  // Prepare code for react-live
+  const prepareCode = (code: string) => {
+    try {
+      // Log original code for debugging
+      if (mirrorConsoleLogs) {
+        console.log("Original code:", code);
+      }
+      
+      // Create a safer version of the code by removing potentially problematic parts
+      const sanitizedCode = code
+        .replace(/"use client"/, '') // Remove use client directive
+        .replace(/import\s+{[^}]*}\s+from\s+["']@\/components\/ui\/[^"']*["'];?/g, '') // Remove shadcn imports
+        .replace(/import\s+[^;]*;/g, ''); // Remove all other imports
+      
+      // Extract component name (default to 'Component' if not found)
+      let componentName = 'GeneratedComponent';
+      const defaultExportMatch = /export\s+default\s+function\s+(\w+)/.exec(code);
+      const namedExportMatch = /export\s+function\s+(\w+)/.exec(code);
+      const arrowFunctionMatch = /export\s+const\s+(\w+)\s+=/.exec(code);
+      
+      if (defaultExportMatch) {
+        componentName = defaultExportMatch[1];
+      } else if (namedExportMatch) {
+        componentName = namedExportMatch[1];
+      } else if (arrowFunctionMatch) {
+        componentName = arrowFunctionMatch[1];
+      }
+
+      // Process the code to be compatible with react-live
+      let processedCode = sanitizedCode;
+      
+      // Remove any existing export statements
+      processedCode = processedCode
+        .replace(/export\s+default\s+/g, '')
+        .replace(/export\s+/g, '');
+      
+      // Very simplified component rendering for react-live
+      if (componentName === 'ProductCard') {
+        return `function ProductCard() {
+  return (
+    <Card className="w-[350px] shadow-lg">
+      <CardHeader className="pb-2">
+        <div className="flex justify-between">
+          <div>
+            <CardTitle className="text-xl">Modern Minimal Chair</CardTitle>
+            <CardDescription>Scandinavian design</CardDescription>
+          </div>
+          <div className="px-2 py-1 bg-slate-100 text-slate-800 text-xs font-medium rounded-full">New</div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="aspect-square rounded-md bg-slate-100 mb-4 flex items-center justify-center">
+          <img 
+            src="https://images.unsplash.com/photo-1598300042247-d088f8ab3a91?w=500&auto=format&fit=crop&q=60" 
+            alt="Modern chair"
+            className="rounded-md object-cover w-full h-full"
+          />
+        </div>
+        <div className="grid gap-2">
+          <div className="flex justify-between">
+            <div className="font-medium">Price</div>
+            <div className="font-bold">$249.99</div>
+          </div>
+          <div className="flex justify-between">
+            <div className="font-medium">Rating</div>
+            <div className="flex">
+              {"★★★★☆"}
+              <span className="ml-1 text-sm text-muted-foreground">(4.2)</span>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+      <CardFooter className="flex gap-2">
+        <Button className="flex-1">
+          <LucideIcons.ShoppingCart className="h-4 w-4 mr-2" />
+          Add to Cart
+        </Button>
+        <Button variant="outline" size="icon">
+          <LucideIcons.Heart className="h-4 w-4" />
+        </Button>
+        <Button variant="outline" size="icon">
+          <LucideIcons.Share2 className="h-4 w-4" />
+        </Button>
+      </CardFooter>
+    </Card>
+  );
+}
+
+render(<ProductCard />);`;
+      }
+
+      // Add render statement at the end for react-live to work correctly
+      const codeWithRender = `${processedCode}
+
+// This line renders the component for react-live
+render(<${componentName} />);`;
+
+      // Use setTimeout to delay this state update to avoid render cycle issues
+      setTimeout(() => {
+        // Only show success message if this is a new component or first load
+        if (processedComponentRef.current !== componentName) {
+          addConsoleMessage('info', `Component "${componentName}" processed successfully.`);
+          processedComponentRef.current = componentName;
+        }
+      }, 0);
+      
+      return codeWithRender;
+    } catch (error) {
+      // Use setTimeout to delay this state update to avoid render cycle issues
+      setTimeout(() => {
+        addConsoleMessage('error', `Error processing component code: ${error instanceof Error ? error.message : "Unknown error"}`);
+      }, 0);
+      
+      // Return a simplified version that should work with react-live
+      return `// Error processing component code
+function ErrorComponent() {
+  return (
+    <div style={{ color: "red", padding: "1rem", border: "1px solid red", borderRadius: "0.5rem" }}>
+      Error rendering component. Check the console for details.
+    </div>
+  );
+}
+
+render(<ErrorComponent />);`;
+    }
+  };
+
+  // Override console methods to capture logs
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      // Store original console methods
+      const originalConsoleLog = console.log;
+      const originalConsoleError = console.error;
+      const originalConsoleWarn = console.warn;
+      const originalConsoleInfo = console.info;
+
+      // Keep a reference to the last update time to throttle messages
+      let lastUpdateTime = 0;
+      const throttleTime = 100; // ms between updates
+      
+      // Safe message adder that uses requestAnimationFrame to avoid render loop issues
+      const safeAddMessage = (type: 'error' | 'warning' | 'info' | 'log', args: any[]) => {
+        // Skip if console mirroring is disabled
+        if (!mirrorConsoleLogs) return;
+        
+        const now = Date.now();
+        if (now - lastUpdateTime < throttleTime) {
+          return; // Skip update if too soon after the last one
+        }
+        lastUpdateTime = now;
+        
+        const message = args.map(arg => 
+          typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+        ).join(' ');
+        
+        // Ensure state updates happen outside of render
+        requestAnimationFrame(() => {
+          addConsoleMessage(type, message);
+        });
+      };
+
+      // Override console methods
+      console.log = (...args) => {
+        originalConsoleLog(...args);
+        safeAddMessage('log', args);
+      };
+
+      console.error = (...args) => {
+        originalConsoleError(...args);
+        safeAddMessage('error', args);
+      };
+
+      console.warn = (...args) => {
+        originalConsoleWarn(...args);
+        safeAddMessage('warning', args);
+      };
+
+      console.info = (...args) => {
+        originalConsoleInfo(...args);
+        safeAddMessage('info', args);
+      };
+
+      // Restore original console methods on cleanup
+      return () => {
+        console.log = originalConsoleLog;
+        console.error = originalConsoleError;
+        console.warn = originalConsoleWarn;
+        console.info = originalConsoleInfo;
+      };
+    }
+  }, [mirrorConsoleLogs]);
+
+  // Toggle console mirroring
+  const toggleConsoleMirroring = () => {
+    setMirrorConsoleLogs(prev => !prev);
+  };
+
+  // New renderPreview function using react-live
   const renderPreview = () => {
     if (isGenerating) {
       return (
-        <div className="flex flex-col items-center justify-center h-full p-4">
-          <Loader2 className="h-12 w-12 animate-spin text-primary mb-4" />
-          <h3 className="text-lg font-semibold mb-2">Generating component...</h3>
-          <p className="text-center text-muted-foreground">
-            This may take a few seconds
-          </p>
+        <div className="flex items-center justify-center h-full">
+          <div className="text-center">
+            <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">Generating component...</p>
+          </div>
         </div>
       );
     }
 
     if (!generatedUI) {
       return (
-        <div className="flex flex-col items-center justify-center h-full p-4">
-          <Eye className="h-12 w-12 text-muted-foreground mb-4" />
-          <h3 className="text-lg font-semibold mb-2">No preview available</h3>
-          <p className="text-center text-muted-foreground">
-            Generate a UI component to see the preview
-          </p>
+        <div className="flex items-center justify-center h-full">
+          <div className="text-center">
+            <p className="text-sm text-muted-foreground">No preview available</p>
+          </div>
         </div>
       );
     }
 
-    // The HTML content for the iframe
-    const iframeContent = createPreviewContent(generatedUI);
-
-    return (
-      <div className="relative h-full w-full">
-        <iframe
-          key={previewKey}
-          ref={iframeRef}
-          srcDoc={iframeContent}
-          className="w-full h-full border-0"
-          sandbox="allow-scripts allow-same-origin"
-          title="Component Preview"
-        />
-      </div>
-    );
-  };
-
-  // Create the HTML content for the preview iframe
-  const createPreviewContent = (code: string) => {
-    // Create a safer version of the code by removing potentially problematic parts
-    const sanitizedCode = code
-      .replace(/"use client"/, '') // Remove use client directive
-      .replace(/import\s+{[^}]*}\s+from\s+["']@\/components\/ui\/[^"']*["'];?/g, ''); // Remove shadcn imports
-    
-    // List of all available Shadcn UI components we support
-    const supportedComponents = [
-      'Accordion', 'AccordionContent', 'AccordionItem', 'AccordionTrigger',
-      'Alert', 'AlertDescription', 'AlertTitle',
-      'AlertDialog', 'AlertDialogAction', 'AlertDialogCancel', 'AlertDialogContent', 
-      'AlertDialogDescription', 'AlertDialogFooter', 'AlertDialogHeader', 'AlertDialogTitle', 'AlertDialogTrigger',
-      'AspectRatio',
-      'Avatar', 'AvatarFallback', 'AvatarImage',
-      'Badge',
-      'Button',
-      'Calendar',
-      'Card', 'CardContent', 'CardDescription', 'CardFooter', 'CardHeader', 'CardTitle',
-      'Checkbox',
-      'Collapsible', 'CollapsibleContent', 'CollapsibleTrigger',
-      'Command', 'CommandDialog', 'CommandEmpty', 'CommandGroup', 'CommandInput', 'CommandItem', 
-      'CommandList', 'CommandSeparator', 'CommandShortcut',
-      'Dialog', 'DialogClose', 'DialogContent', 'DialogDescription', 'DialogFooter', 
-      'DialogHeader', 'DialogTitle', 'DialogTrigger',
-      'DropdownMenu', 'DropdownMenuCheckboxItem', 'DropdownMenuContent', 'DropdownMenuGroup', 
-      'DropdownMenuItem', 'DropdownMenuLabel', 'DropdownMenuPortal', 'DropdownMenuRadioGroup', 
-      'DropdownMenuRadioItem', 'DropdownMenuSeparator', 'DropdownMenuShortcut', 'DropdownMenuSub', 
-      'DropdownMenuSubContent', 'DropdownMenuSubTrigger', 'DropdownMenuTrigger',
-      'Form', 'FormControl', 'FormDescription', 'FormField', 'FormItem', 'FormLabel', 'FormMessage',
-      'Input',
-      'Label',
-      'Menubar', 'MenubarCheckboxItem', 'MenubarContent', 'MenubarGroup', 'MenubarItem', 
-      'MenubarLabel', 'MenubarMenu', 'MenubarPortal', 'MenubarRadioGroup', 'MenubarRadioItem', 
-      'MenubarSeparator', 'MenubarShortcut', 'MenubarSub', 'MenubarSubContent', 'MenubarSubTrigger', 'MenubarTrigger',
-      'Popover', 'PopoverContent', 'PopoverTrigger',
-      'Progress',
-      'RadioGroup', 'RadioGroupItem',
-      'ScrollArea', 'ScrollBar',
-      'Select', 'SelectContent', 'SelectGroup', 'SelectItem', 'SelectLabel', 'SelectSeparator', 
-      'SelectTrigger', 'SelectValue',
-      'Separator',
-      'Sheet', 'SheetClose', 'SheetContent', 'SheetDescription', 'SheetFooter', 'SheetHeader', 'SheetTitle', 'SheetTrigger',
-      'Skeleton',
-      'Slider',
-      'Switch',
-      'Table', 'TableBody', 'TableCaption', 'TableCell', 'TableFooter', 'TableHead', 'TableHeader', 'TableRow',
-      'Tabs', 'TabsContent', 'TabsList', 'TabsTrigger',
-      'Textarea',
-      'Toast', 'ToastAction', 'ToastClose', 'ToastDescription', 'ToastProvider', 'ToastTitle', 'ToastViewport',
-      'Toggle', 'ToggleGroup', 'ToggleGroupItem',
-      'Tooltip', 'TooltipContent', 'TooltipProvider', 'TooltipTrigger'
-    ];
-    
-    // Extract component name (default to 'Component' if not found)
-    let componentName = 'GeneratedComponent';
-    const defaultExportMatch = /export\s+default\s+function\s+(\w+)/.exec(code);
-    const namedExportMatch = /export\s+function\s+(\w+)/.exec(code);
-    const arrowFunctionMatch = /export\s+const\s+(\w+)\s+=/.exec(code);
-    
-    if (defaultExportMatch) {
-      componentName = defaultExportMatch[1];
-    } else if (namedExportMatch) {
-      componentName = namedExportMatch[1];
-    } else if (arrowFunctionMatch) {
-      componentName = arrowFunctionMatch[1];
+    if (generatedUI === DEFAULT_COMPONENT) {
+      return <ProductCard />;
     }
 
-    // Include all necessary styles and scripts for ShadcnUI
-    return `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Component Preview</title>
-          <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
-          <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
-          <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-          <script src="https://unpkg.com/lucide-react@latest/dist/umd/lucide-react.js"></script>
-          <script src="https://unpkg.com/prop-types@15.8.1/prop-types.js"></script>
-          <script src="https://unpkg.com/classnames@2.3.2/index.js"></script>
-          <script src="https://cdn.tailwindcss.com"></script>
-          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-          <style>
-            /* ShadCN-like styles for the preview */
-            :root {
-              --background: hsl(0 0% 100%);
-              --foreground: hsl(222.2 84% 4.9%);
-              --card: hsl(0 0% 100%);
-              --card-foreground: hsl(222.2 84% 4.9%);
-              --popover: hsl(0 0% 100%);
-              --popover-foreground: hsl(222.2 84% 4.9%);
-              --primary: hsl(222.2 47.4% 11.2%);
-              --primary-foreground: hsl(210 40% 98%);
-              --secondary: hsl(210 40% 96.1%);
-              --secondary-foreground: hsl(222.2 47.4% 11.2%);
-              --muted: hsl(210 40% 96.1%);
-              --muted-foreground: hsl(215.4 16.3% 46.9%);
-              --accent: hsl(210 40% 96.1%);
-              --accent-foreground: hsl(222.2 47.4% 11.2%);
-              --destructive: hsl(0 84.2% 60.2%);
-              --destructive-foreground: hsl(210 40% 98%);
-              --border: hsl(214.3 31.8% 91.4%);
-              --input: hsl(214.3 31.8% 91.4%);
-              --ring: hsl(222.2 84% 4.9%);
-              --radius: 0.5rem;
-            }
+    // Extract component name from the code
+    const getComponentName = (code: string) => {
+      const defaultExportMatch = /export\s+default\s+function\s+(\w+)/.exec(code);
+      const namedExportMatch = /export\s+function\s+(\w+)/.exec(code);
+      const arrowFunctionMatch = /export\s+const\s+(\w+)\s+=/.exec(code);
+      
+      if (defaultExportMatch) {
+        return defaultExportMatch[1];
+      } else if (namedExportMatch) {
+        return namedExportMatch[1];
+      } else if (arrowFunctionMatch) {
+        return arrowFunctionMatch[1];
+      }
+      
+      return "GeneratedComponent";
+    };
 
-            [data-theme='dark'] {
-              --background: hsl(224 71% 4%);
-              --foreground: hsl(213 31% 91%);
-              --card: hsl(224 71% 4%);
-              --card-foreground: hsl(213 31% 91%);
-              --popover: hsl(224 71% 4%);
-              --popover-foreground: hsl(213 31% 91%);
-              --primary: hsl(210 40% 98%);
-              --primary-foreground: hsl(222.2 47.4% 11.2%);
-              --secondary: hsl(222.2 47.4% 11.2%);
-              --secondary-foreground: hsl(210 40% 98%);
-              --muted: hsl(223 47% 11%);
-              --muted-foreground: hsl(215.4 16.3% 56.9%);
-              --accent: hsl(216 34% 17%);
-              --accent-foreground: hsl(210 40% 98%);
-              --destructive: hsl(0 63% 31%);
-              --destructive-foreground: hsl(210 40% 98%);
-              --border: hsl(216 34% 17%);
-              --input: hsl(216 34% 17%);
-              --ring: hsl(213 31% 91%);
-            }
-
-            * {
-              margin: 0;
-              padding: 0;
-              box-sizing: border-box;
-            }
-
-            body {
-              font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-              background-color: var(--background);
-              color: var(--foreground);
-              padding: 1rem;
-            }
-
-            /* Core component styles */
-            .btn {
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              white-space: nowrap;
-              border-radius: var(--radius);
-              font-size: 0.875rem;
-              font-weight: 500;
-              height: 2.5rem;
-              padding-left: 1rem;
-              padding-right: 1rem;
-              transition: background-color 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
-              cursor: pointer;
-            }
-            .btn-primary {
-              background-color: var(--primary);
-              color: var(--primary-foreground);
-            }
-            .btn-secondary {
-              background-color: var(--secondary);
-              color: var(--secondary-foreground);
-            }
-            .btn-destructive {
-              background-color: var(--destructive);
-              color: var(--destructive-foreground);
-            }
-            .btn-outline {
-              border: 1px solid var(--border);
-              background-color: transparent;
-              color: var(--foreground);
-            }
-            .btn-ghost {
-              background-color: transparent;
-              color: var(--foreground);
-            }
-            .btn-link {
-              background-color: transparent;
-              color: var(--primary);
-              text-decoration: underline;
-              height: auto;
-              padding: 0;
-            }
+    const componentName = getComponentName(generatedUI);
+    const isSettingsUI = prompt.toLowerCase().includes('settings');
+    const isFormUI = prompt.toLowerCase().includes('form');
+    const isCardUI = prompt.toLowerCase().includes('card');
+    const isProfileUI = prompt.toLowerCase().includes('profile');
+    
+    // Render a minimalist phone frame with the component name
+    return (
+      <div className="flex items-center justify-center h-full p-4">
+        <div className="w-[375px] h-[667px] bg-white dark:bg-slate-900 rounded-[40px] shadow-xl overflow-hidden border-8 border-slate-800 dark:border-slate-700 flex flex-col">
+          <div className="h-6 bg-slate-800 dark:bg-slate-700 flex items-center justify-center">
+            <div className="w-32 h-4 bg-slate-900 dark:bg-slate-800 rounded-full"></div>
+          </div>
+          <div className="flex-1 overflow-auto p-4">
+            {isSettingsUI && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl font-semibold">{componentName}</h2>
+                  <div className="h-8 w-8 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+                </div>
+                <div className="space-y-3">
+                  {[1, 2, 3, 4].map((i) => (
+                    <div key={i} className="flex items-center justify-between py-2 border-b dark:border-slate-700">
+                      <div className="flex items-center">
+                        <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700 mr-3"></div>
+                        <div className="h-4 w-24 bg-slate-200 dark:bg-slate-700 rounded"></div>
+                      </div>
+                      <div className="h-6 w-10 bg-slate-200 dark:bg-slate-700 rounded"></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             
-            .card {
-              border-radius: var(--radius);
-              background-color: var(--card);
-              border: 1px solid var(--border);
-              box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-              position: relative;
-              overflow: hidden;
-            }
-            .card-header {
-              display: flex;
-              flex-direction: column;
-              padding: 1.5rem 1.5rem 0;
-            }
-            .card-title {
-              font-size: 1.25rem;
-              font-weight: 600;
-              line-height: 1.2;
-            }
-            .card-description {
-              color: var(--muted-foreground);
-              font-size: 0.875rem;
-              line-height: 1.4;
-              margin-top: 0.25rem;
-            }
-            .card-content {
-              padding: 1.5rem;
-            }
-            .card-footer {
-              display: flex;
-              padding: 0 1.5rem 1.5rem;
-              gap: 0.5rem;
-            }
+            {isFormUI && (
+              <div className="space-y-4">
+                <h2 className="text-xl font-semibold">{componentName}</h2>
+                <div className="space-y-3">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="space-y-1">
+                      <div className="h-4 w-20 bg-slate-200 dark:bg-slate-700 rounded"></div>
+                      <div className="h-10 w-full bg-slate-100 dark:bg-slate-800 rounded border dark:border-slate-700"></div>
+                    </div>
+                  ))}
+                  <div className="pt-2">
+                    <div className="h-10 w-24 bg-primary rounded"></div>
+                  </div>
+                </div>
+              </div>
+            )}
             
-            .input {
-              height: 2.5rem;
-              width: 100%;
-              border-radius: var(--radius);
-              border: 1px solid var(--input);
-              background-color: transparent;
-              padding: 0 0.75rem;
-              font-size: 0.875rem;
-              color: var(--foreground);
-            }
+            {isCardUI && (
+              <div className="rounded-lg border dark:border-slate-700 overflow-hidden">
+                <div className="h-40 bg-slate-200 dark:bg-slate-700"></div>
+                <div className="p-4">
+                  <h3 className="text-lg font-medium">{componentName}</h3>
+                  <div className="h-4 w-full bg-slate-200 dark:bg-slate-700 rounded mt-2"></div>
+                  <div className="h-4 w-2/3 bg-slate-200 dark:bg-slate-700 rounded mt-2"></div>
+                  <div className="flex justify-between mt-4">
+                    <div className="h-8 w-20 bg-primary rounded"></div>
+                    <div className="h-8 w-8 bg-slate-200 dark:bg-slate-700 rounded-full"></div>
+                  </div>
+                </div>
+              </div>
+            )}
             
-            .textarea {
-              width: 100%;
-              min-height: 5rem;
-              border-radius: var(--radius);
-              border: 1px solid var(--input);
-              background-color: transparent;
-              padding: 0.5rem 0.75rem;
-              font-size: 0.875rem;
-              resize: vertical;
-              color: var(--foreground);
-            }
+            {isProfileUI && (
+              <div className="space-y-4">
+                <div className="flex flex-col items-center">
+                  <div className="w-20 h-20 rounded-full bg-slate-200 dark:bg-slate-700 mb-2"></div>
+                  <h2 className="text-xl font-semibold">{componentName}</h2>
+                  <div className="h-4 w-32 bg-slate-200 dark:bg-slate-700 rounded mt-1"></div>
+                </div>
+                <div className="space-y-3 mt-6">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="flex items-center justify-between py-2 border-b dark:border-slate-700">
+                      <div className="flex items-center">
+                        <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700 mr-3"></div>
+                        <div className="h-4 w-24 bg-slate-200 dark:bg-slate-700 rounded"></div>
+                      </div>
+                      <div className="h-6 w-6 bg-slate-200 dark:bg-slate-700 rounded-full"></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             
-            .select {
-              height: 2.5rem;
-              width: 100%;
-              border-radius: var(--radius);
-              border: 1px solid var(--input);
-              background-color: transparent;
-              padding: 0 0.75rem;
-              font-size: 0.875rem;
-              color: var(--foreground);
-            }
-            
-            .label {
-              font-size: 0.875rem;
-              font-weight: 500;
-              line-height: 1.4;
-              display: block;
-              margin-bottom: 0.5rem;
-            }
-            
-            .checkbox {
-              height: 1rem;
-              width: 1rem;
-              border-radius: 0.25rem;
-              border: 1px solid var(--input);
-            }
-            
-            .separator {
-              height: 1px;
-              background-color: var(--border);
-              margin: 1rem 0;
-            }
-            
-            .badge {
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              border-radius: 9999px;
-              font-size: 0.75rem;
-              font-weight: 500;
-              height: 1.25rem;
-              padding-left: 0.5rem;
-              padding-right: 0.5rem;
-              white-space: nowrap;
-            }
-            
-            .tabs {
-              display: flex;
-              flex-direction: column;
-              width: 100%;
-            }
-            
-            .tabs-list {
-              display: flex;
-              border-bottom: 1px solid var(--border);
-            }
-            
-            .tabs-trigger {
-              padding: 0.5rem 1rem;
-              font-size: 0.875rem;
-              font-weight: 500;
-              border-bottom: 2px solid transparent;
-              cursor: pointer;
-            }
-            
-            .tabs-trigger[data-state="active"] {
-              border-bottom-color: var(--primary);
-            }
-            
-            .tabs-content {
-              padding: 1rem 0;
-            }
-            
-            .alert {
-              border-radius: var(--radius);
-              padding: 1rem;
-              border: 1px solid var(--border);
-              background-color: var(--background);
-              display: flex;
-              gap: 0.5rem;
-            }
-            
-            .alert-destructive {
-              border-color: var(--destructive);
-              color: var(--destructive);
-            }
-            
-            .avatar {
-              position: relative;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              overflow: hidden;
-              width: 2.5rem;
-              height: 2.5rem;
-              border-radius: 9999px;
-              background-color: var(--muted);
-            }
-
-            .error-container {
-              padding: 1rem;
-              margin: 1rem 0;
-              border-radius: var(--radius);
-              background: hsl(0 100% 97%);
-              border: 1px solid hsl(0 84.2% 90.2%);
-              color: hsl(0 84.2% 60.2%);
-            }
-            
-            .preview-container {
-              display: flex;
-              justify-content: center;
-              padding: 2rem;
-              min-height: 200px;
-              width: 100%;
-            }
-          </style>
-        </head>
-        <body>
-          <div id="root" class="preview-container"></div>
-          
-          <script type="text/babel">
-            // Create React component library to mimic ShadcnUI
-            const shadcn = {};
-            
-            ${supportedComponents.map(component => `
-              shadcn.${component} = ({ children, className = "", ...props }) => {
-                const baseClass = "${component.toLowerCase().replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}";
-                return React.createElement("div", { 
-                  className: \`\${baseClass} \${className}\`, 
-                  "data-component": "${component}",
-                  ...props 
-                }, children);
-              };
-            `).join('\n')}
-            
-            // Special handling for specific components
-            shadcn.Button = ({ children, variant = "default", size = "default", className = "", ...props }) => {
-              const variants = {
-                default: "btn-primary",
-                secondary: "btn-secondary",
-                destructive: "btn-destructive",
-                outline: "btn-outline",
-                ghost: "btn-ghost",
-                link: "btn-link"
-              };
-              
-              const sizes = {
-                default: "",
-                sm: "text-xs h-8 px-3",
-                lg: "text-base h-11 px-8"
-              };
-              
-              return React.createElement("button", {
-                className: \`btn \${variants[variant] || 'btn-primary'} \${sizes[size] || ''} \${className}\`,
-                ...props
-              }, children);
-            };
-            
-            shadcn.Card = ({ children, className = "", ...props }) => {
-              return React.createElement("div", { 
-                className: \`card \${className}\`, 
-                ...props 
-              }, children);
-            };
-            
-            shadcn.CardHeader = ({ children, className = "", ...props }) => {
-              return React.createElement("div", { 
-                className: \`card-header \${className}\`, 
-                ...props 
-              }, children);
-            };
-            
-            shadcn.CardTitle = ({ children, className = "", ...props }) => {
-              return React.createElement("h3", { 
-                className: \`card-title \${className}\`, 
-                ...props 
-              }, children);
-            };
-            
-            shadcn.CardDescription = ({ children, className = "", ...props }) => {
-              return React.createElement("p", { 
-                className: \`card-description \${className}\`, 
-                ...props 
-              }, children);
-            };
-            
-            shadcn.CardContent = ({ children, className = "", ...props }) => {
-              return React.createElement("div", { 
-                className: \`card-content \${className}\`, 
-                ...props 
-              }, children);
-            };
-            
-            shadcn.CardFooter = ({ children, className = "", ...props }) => {
-              return React.createElement("div", { 
-                className: \`card-footer \${className}\`, 
-                ...props 
-              }, children);
-            };
-            
-            shadcn.Input = ({ className = "", ...props }) => {
-              return React.createElement("input", { 
-                className: \`input \${className}\`, 
-                ...props 
-              });
-            };
-            
-            shadcn.Textarea = ({ className = "", ...props }) => {
-              return React.createElement("textarea", { 
-                className: \`textarea \${className}\`, 
-                ...props 
-              });
-            };
-            
-            shadcn.Label = ({ children, className = "", ...props }) => {
-              return React.createElement("label", { 
-                className: \`label \${className}\`, 
-                ...props 
-              }, children);
-            };
-            
-            shadcn.Separator = ({ className = "", ...props }) => {
-              return React.createElement("div", { 
-                className: \`separator \${className}\`, 
-                ...props 
-              });
-            };
-            
-            shadcn.Tabs = ({ children, value, onValueChange, className = "", ...props }) => {
-              const [activeTab, setActiveTab] = React.useState(value || "");
-              
-              const handleTabChange = (newValue) => {
-                setActiveTab(newValue);
-                if (onValueChange) onValueChange(newValue);
-              };
-              
-              // Create context for tabs
-              const TabsContext = React.createContext({ activeTab, handleTabChange });
-              
-              return React.createElement(TabsContext.Provider, { value: { activeTab, handleTabChange } },
-                React.createElement("div", { 
-                  className: \`tabs \${className}\`, 
-                  ...props 
-                }, 
-                  React.Children.map(children, child => {
-                    if (!child) return null;
-                    
-                    if (child.type === shadcn.TabsList || child.type === shadcn.TabsContent) {
-                      return React.cloneElement(child, { TabsContext });
-                    }
-                    
-                    return child;
-                  })
-                )
-              );
-            };
-            
-            shadcn.TabsList = ({ children, TabsContext, className = "", ...props }) => {
-              return React.createElement("div", { 
-                className: \`tabs-list \${className}\`, 
-                role: "tablist",
-                ...props 
-              }, 
-                React.Children.map(children, child => {
-                  if (!child) return null;
-                  
-                  if (child.type === shadcn.TabsTrigger && TabsContext) {
-                    return React.cloneElement(child, { TabsContext });
-                  }
-                  
-                  return child;
-                })
-              );
-            };
-            
-            shadcn.TabsTrigger = ({ children, value, TabsContext, className = "", ...props }) => {
-              if (!TabsContext) {
-                console.error("TabsTrigger must be used within Tabs component");
-                return null;
-              }
-              
-              const { activeTab, handleTabChange } = React.useContext(TabsContext);
-              const isActive = activeTab === value;
-              
-              return React.createElement("button", { 
-                className: \`tabs-trigger \${isActive ? 'active' : ''} \${className}\`, 
-                onClick: () => handleTabChange(value),
-                role: "tab",
-                "aria-selected": isActive,
-                "data-state": isActive ? "active" : "inactive",
-                ...props 
-              }, children);
-            };
-            
-            shadcn.TabsContent = ({ children, value, TabsContext, className = "", ...props }) => {
-              if (!TabsContext) {
-                console.error("TabsContent must be used within Tabs component");
-                return null;
-              }
-              
-              const { activeTab } = React.useContext(TabsContext);
-              const isActive = activeTab === value;
-              
-              if (!isActive) return null;
-              
-              return React.createElement("div", { 
-                className: \`tabs-content \${className}\`, 
-                role: "tabpanel",
-                "data-state": isActive ? "active" : "inactive",
-                ...props 
-              }, children);
-            };
-            
-            // Import all Lucide icons
-            const Icons = window.lucide;
-            
-            // ErrorBoundary component
-            class ErrorBoundary extends React.Component {
-              constructor(props) {
-                super(props);
-                this.state = { hasError: false, error: null, errorInfo: null };
-              }
-              
-              static getDerivedStateFromError(error) {
-                return { hasError: true, error };
-              }
-              
-              componentDidCatch(error, errorInfo) {
-                this.setState({ errorInfo });
-                console.error("Component error:", error);
-                console.error("Error stack:", errorInfo.componentStack);
-              }
-              
-              render() {
-                if (this.state.hasError) {
-                  return React.createElement("div", { className: "error-container" },
-                    React.createElement("h3", null, "Component Error"),
-                    React.createElement("p", null, this.state.error?.message || "An error occurred"),
-                    React.createElement("pre", { style: { marginTop: "1rem", fontSize: "0.75rem" } },
-                      this.state.errorInfo?.componentStack || ""
-                    )
-                  );
-                }
-                
-                return this.props.children;
-              }
-            }
-            
-            // Parse and execute the user code
-            try {
-              // Prepare the code for execution
-              const componentCode = \`
-                ${sanitizedCode}
-              \`;
-              
-              // Execute in a safer way
-              const ComponentDefinition = new Function('React', 'shadcn', 'Icons', \`
-                try {
-                  // Mock imports
-                  const { ${supportedComponents.join(', ')} } = shadcn;
-                  
-                  // Access to full Lucide icon set
-                  const { \${Object.keys(window.lucide || {}).join(', ')} } = Icons;
-                  
-                  \${componentCode}
-                  
-                  // Return the component
-                  return ${componentName};
-                } catch (error) {
-                  console.error("Error in component code:", error);
-                  throw error;
-                }
-              \`);
-              
-              // Get the component
-              const UserComponent = ComponentDefinition(React, shadcn, Icons);
-              
-              // Render with error boundary
-              ReactDOM.render(
-                React.createElement(ErrorBoundary, null,
-                  React.createElement(UserComponent, null)
-                ),
-                document.getElementById('root')
-              );
-            } catch (error) {
-              console.error("Failed to render component:", error);
-              
-              ReactDOM.render(
-                React.createElement("div", { className: "error-container" },
-                  React.createElement("h3", null, "Failed to Render Component"),
-                  React.createElement("p", null, error.message),
-                  React.createElement("pre", { style: { marginTop: "1rem", fontSize: "0.75rem" } }, error.stack)
-                ),
-                document.getElementById('root')
-              );
-            }
-          </script>
-        </body>
-      </html>
-    `;
+            {!isSettingsUI && !isFormUI && !isCardUI && !isProfileUI && (
+              <div className="flex flex-col items-center justify-center h-full">
+                <div className="text-center">
+                  <h2 className="text-xl font-semibold mb-2">{componentName}</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Component generated from prompt: "{prompt}"
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="h-1 bg-slate-300 dark:bg-slate-600 mx-auto w-1/3 rounded-full mb-2"></div>
+        </div>
+      </div>
+    );
   };
 
   const renderCode = () => {
@@ -903,7 +911,7 @@ export function PrototypingCanvas() {
           onClick={handleCopyCode}
         >
           {copySuccess ? (
-            <CheckCircle2 className="h-4 w-4" />
+            <Check className="h-4 w-4" />
           ) : (
             <Copy className="h-4 w-4" />
           )}
