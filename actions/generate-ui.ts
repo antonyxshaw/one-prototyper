@@ -39,8 +39,13 @@ The component should adhere to ONLY these requirements:
      * Form components
      * Avatar, Badge, Calendar, Checkbox, Separator
      * Alert, Toast
+   - For data visualization and charts, use Tremor components:
+     * AreaChart, BarChart, DonutChart, LineChart, PieChart
+     * Card, Metric, ProgressBar, ProgressCircle
+     * Grid, Col, Flex, Table, TableRow, TableCell
+     * Text, Title, Subtitle, Callout, Badge
    - DO NOT use any components not listed above
-   - DO NOT attempt to import or use 3rd party libraries except Framer Motion
+   - DO NOT attempt to import or use 3rd party libraries except Framer Motion and Tremor
 
 2. WORLD-CLASS UI DESIGN PRINCIPLES:
    - Create Airbnb-quality UI with clean, modern aesthetics
@@ -57,7 +62,7 @@ The component should adhere to ONLY these requirements:
 3. DYNAMIC CONTENT PATTERNS:
    - For card-based UIs: Generate 3-5 cards with varied realistic content
    - For lists: Create 4-8 items with diverse, realistic data
-   - For dashboards: Include varied metrics, charts placeholders
+   - For dashboards: Include varied metrics, charts with realistic data
    - For forms: Add realistic field labels and placeholder text
    - Include realistic user data (names, locations, prices, dates)
    - Use realistic image placeholders with proper aspect ratios
@@ -73,6 +78,7 @@ The component should adhere to ONLY these requirements:
    import { Button } from "@/components/ui/button"
    import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
    import { motion } from "framer-motion"
+   import { AreaChart, Card as TremorCard, Metric, Text, Title } from "@tremor/react"
 
 6. ICONS:
    - Use only Lucide icons (must be imported from lucide-react)
@@ -114,25 +120,57 @@ The component should adhere to ONLY these requirements:
     - Navigation: Clear, minimal, with active state indicators
     - Lists: Proper spacing between items, subtle dividers
     - Headers: Clean with balanced element spacing
+    - Charts: Use Tremor charts with proper labels, legends, and tooltips
 
 12. ERROR PREVENTION:
     - Ensure all opening tags have corresponding closing tags
     - Ensure all required props are provided
     - For Tabs, TabsContent MUST be inside Tabs component
     - Check all component nesting requirements
+    - For Tremor components, ensure proper data formatting
 
-Here's the start of a properly structured world-class UI component with Framer Motion:
+Here's the start of a properly structured world-class UI component with Framer Motion and Tremor:
 
 "use client"
 
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Heart, Share, Star, MapPin } from "lucide-react"
+import { Heart, Share, Star, MapPin, TrendingUp } from "lucide-react"
 import { motion } from "framer-motion"
+import { AreaChart, Card as TremorCard, Metric, Text, Title } from "@tremor/react"
 
-export function AirbnbStyleListings() {
+export function DashboardComponent() {
   const [favorites, setFavorites] = useState<string[]>([])
+  
+  // Sample data for charts
+  const chartdata = [
+    {
+      date: "Jan 22",
+      "Visitors": 2890,
+      "Bookings": 1200,
+    },
+    {
+      date: "Feb 22",
+      "Visitors": 3200,
+      "Bookings": 1600,
+    },
+    {
+      date: "Mar 22",
+      "Visitors": 4100,
+      "Bookings": 2100,
+    },
+    {
+      date: "Apr 22",
+      "Visitors": 4500,
+      "Bookings": 2400,
+    },
+    {
+      date: "May 22",
+      "Visitors": 5100,
+      "Bookings": 2800,
+    },
+  ];
   
   const listings = [
     {
@@ -198,8 +236,74 @@ export function AirbnbStyleListings() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
       >
-        Places to stay near you
+        Dashboard Overview
       </motion.h1>
+      
+      <motion.div
+        variants={containerVariants}
+        initial="hidden"
+        animate="visible"
+        className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8"
+      >
+        <motion.div variants={itemVariants}>
+          <TremorCard className="rounded-2xl">
+            <CardHeader className="pb-2">
+              <Title>Visitor Traffic</Title>
+              <Text>Daily visitors and bookings</Text>
+            </CardHeader>
+            <CardContent>
+              <AreaChart
+                className="h-72 mt-4"
+                data={chartdata}
+                index="date"
+                categories={["Visitors", "Bookings"]}
+                colors={["indigo", "rose"]}
+                valueFormatter={(number) => number.toString()}
+                showLegend
+                showAnimation
+              />
+            </CardContent>
+          </TremorCard>
+        </motion.div>
+        
+        <motion.div variants={itemVariants}>
+          <TremorCard className="rounded-2xl">
+            <CardHeader className="pb-2">
+              <Title>Performance Metrics</Title>
+              <Text>Monthly overview</Text>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-6">
+                <div>
+                  <Metric className="flex items-center">
+                    2,851 <TrendingUp className="ml-2 h-5 w-5 text-emerald-500" />
+                  </Metric>
+                  <Text>Total bookings this month</Text>
+                </div>
+                <div>
+                  <Metric className="flex items-center">
+                    $42,350 <TrendingUp className="ml-2 h-5 w-5 text-emerald-500" />
+                  </Metric>
+                  <Text>Revenue this month</Text>
+                </div>
+                <div>
+                  <Metric>89.2%</Metric>
+                  <Text>Occupancy rate</Text>
+                </div>
+              </div>
+            </CardContent>
+          </TremorCard>
+        </motion.div>
+      </motion.div>
+      
+      <motion.h2 
+        className="text-2xl font-bold mb-6"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.3, delay: 0.2 }}
+      >
+        Top Performing Listings
+      </motion.h2>
       
       <motion.div 
         className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
@@ -267,7 +371,7 @@ export function AirbnbStyleListings() {
 // Helper function to clean up the generated code
 function cleanGeneratedCode(text: string): string {
   // Remove markdown code blocks if present
-  let cleanedText = text.replace(/```(tsx|jsx|ts|js)?([\s\S]*?)```/g, '$2');
+  let cleanedText = text.replace(/```(?:tsx|jsx|ts|js)?([^]*?)```/g, '$1');
   
   // If no code blocks were found, return the original text
   if (cleanedText === text) {
